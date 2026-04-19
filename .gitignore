@@ -1,0 +1,33 @@
+# Credentials - NEVER commit these
+.env
+
+# Binaries
+server
+server.exe
+*.exe
+
+# Go
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+tmp/**/*
