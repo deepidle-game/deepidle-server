@@ -2,7 +2,8 @@ package middleware
 
 import (
 	"strings"
-	"os"
+
+	"deepidle-server/config"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
@@ -16,11 +17,7 @@ func Protected() fiber.Handler {
 		}
 
 		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-
-		secret := os.Getenv("JWT_SECRET")
-		if secret == "" {
-			secret = "my_super_secret_jwt_key"
-		}
+		secret := config.GetJWTSecret()
 
 		token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
 			return []byte(secret), nil

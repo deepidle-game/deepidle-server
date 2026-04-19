@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"deepidle-server/claims"
 	"deepidle-server/database"
 	"deepidle-server/models"
 	"deepidle-server/state"
@@ -53,10 +54,10 @@ func UpdateAction(c *fiber.Ctx) error {
 
 	collChars := database.DB.Collection("characters")
 	_, err = collChars.UpdateOne(
-		context.TODO(), 
-		bson.M{"user_id": userID}, 
+		context.TODO(),
+		bson.M{"user_id": userID},
 		bson.M{"$set": bson.M{
-			"current_action": req.Action, 
+			"current_action":   req.Action,
 			"action_started_at": time.Now().Unix(),
 		}},
 	)
@@ -64,14 +65,12 @@ func UpdateAction(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not update action"})
 	}
 
-	// Update in-memory state
 	state.UpdatePlayerState(userIDStr, username, req.Action)
 
 	return c.JSON(fiber.Map{"message": "Action updated", "current_action": req.Action})
 }
 
 func GetOnlinePlayers(c *fiber.Ctx) error {
-	// Directly from in-memory state
 	players := state.GetOnlinePlayers()
 	return c.JSON(fiber.Map{"online_players": players})
 }
@@ -90,11 +89,6 @@ func ClaimResources(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Character not found"})
 	}
 
-	if char.CurrentAction == "Idle" || char.ActionStartedAt == 0 {
-		return c.JSON(fiber.Map{"message": "No active action to claim resources from", "gained": nil})
-	}
-
-	// Fetch Config
 	collConfigs := database.DB.Collection("configs")
 	var gameConfig models.GameConfig
 	err = collConfigs.FindOne(context.TODO(), bson.M{"config_id": "main_config"}).Decode(&gameConfig)
@@ -104,86 +98,47 @@ func ClaimResources(c *fiber.Ctx) error {
 
 	actionCfg, ok := gameConfig.Actions[char.CurrentAction]
 	if !ok {
-		// Default to not yielding resources
 		return c.JSON(fiber.Map{"message": "Current action does not yield resources", "gained": nil})
 	}
 
 	timePassed := time.Now().Unix() - char.ActionStartedAt
 
-	// 1. Determine tool level
-	toolLevel := 0
-	for _, item := range char.Inventory {
-		if item.ItemID == actionCfg.RequiredTool {
-			toolLevel = item.Level
-			break
-		}
+	valid, msg := claims.ValidateClaim(&char, actionCfg, timePassed)
+	if !valid {
+		return c.JSON(fiber.Map{"message": msg, "gained": nil})
 	}
 
-	if toolLevel == 0 {
-		return c.JSON(fiber.Map{
-			"message":       "You don't have the required tool for this action",
-			"required_tool":  actionCfg.RequiredTool,
-			"gained":        nil,
-		})
-	}
-
-	// 2. Calculate resource using bonus percentage
-	cycles := int(timePassed / actionCfg.BaseTimeSec)
-	if cycles <= 0 {
-		return c.JSON(fiber.Map{"message": "Not enough time passed to claim resources", "gained": nil})
-	}
-
-	totalBaseYield := float64(cycles * actionCfg.BaseAmount)
-	multiplier := 1.0 + (float64(toolLevel-1) * actionCfg.BonusPerLevel)
-	resourceCount := int(totalBaseYield * multiplier)
-
+	resourceCount, resourceType := claims.CalculateResources(&char, actionCfg, timePassed)
 	if resourceCount <= 0 {
 		return c.JSON(fiber.Map{"message": "Not enough resources gathered", "gained": nil})
 	}
 
-	resourceType := actionCfg.DropItem
+	stacked, newSlot, newInventory := claims.AddResourceToInventory(
+		char.Inventory, resourceType, resourceCount, char.MaxInventorySlots,
+	)
 
-	// Add resource to inventory
-	found := false
-	for i, item := range char.Inventory {
-		if item.ItemID == resourceType {
-			char.Inventory[i].Quantity += resourceCount
-			found = true
-			break
+	if !stacked && !newSlot {
+		currentItems := make([]string, len(char.Inventory))
+		for i, item := range char.Inventory {
+			currentItems[i] = item.ItemID
 		}
-	}
-
-	if !found {
-		// Enforce inventory limit for new items
-		if len(char.Inventory) >= char.MaxInventorySlots {
-			// List current items to help user understand
-			currentItems := []string{}
-			for _, item := range char.Inventory {
-				currentItems = append(currentItems, item.ItemID)
-			}
-			return c.JSON(fiber.Map{
-				"message":          "Inventory full. No empty slots for new item type.",
-				"gained":          nil,
-				"inventory_items":  currentItems,
-				"new_item_type":   resourceType,
-				"inventory_slots": len(char.Inventory),
-				"max_slots":       char.MaxInventorySlots,
-				"suggestion":      "Deposit an item to free a slot, or stack with existing resources.",
-			})
-		}
-		char.Inventory = append(char.Inventory, models.Item{
-			ItemID:   resourceType,
-			Level:    1,
-			Quantity: resourceCount,
+		return c.JSON(fiber.Map{
+			"message":           "Inventory full. No empty slots for new item type.",
+			"gained":           nil,
+			"inventory_items":   currentItems,
+			"new_item_type":    resourceType,
+			"inventory_slots":   len(char.Inventory),
+			"max_slots":        char.MaxInventorySlots,
+			"suggestion":       "Deposit an item to free a slot, or stack with existing resources.",
 		})
 	}
 
-	// Update DB (both inventory and reset action timer)
+	char.Inventory = newInventory
 	_, err = collChars.UpdateOne(
 		context.TODO(),
 		bson.M{"user_id": userID},
 		bson.M{"$set": bson.M{
-			"inventory": char.Inventory,
+			"inventory":         char.Inventory,
 			"action_started_at": time.Now().Unix(),
 		}},
 	)
@@ -191,8 +146,8 @@ func ClaimResources(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to claim resources"})
 	}
 
-	msg := "Resources claimed and stacked"
-	if !found {
+	msg = "Resources claimed and stacked"
+	if newSlot {
 		msg = "Resources claimed (new slot used)"
 	}
 	return c.JSON(fiber.Map{
@@ -225,8 +180,8 @@ func UpdateCharacterName(c *fiber.Ctx) error {
 
 	collChars := database.DB.Collection("characters")
 	_, err = collChars.UpdateOne(
-		context.TODO(), 
-		bson.M{"user_id": userID}, 
+		context.TODO(),
+		bson.M{"user_id": userID},
 		bson.M{"$set": bson.M{"name": req.Name}},
 	)
 	if err != nil {

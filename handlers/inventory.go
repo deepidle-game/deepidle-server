@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"deepidle-server/database"
+	"deepidle-server/inventory"
 	"deepidle-server/models"
 
 	"github.com/gofiber/fiber/v2"
@@ -26,31 +27,6 @@ func GetInventory(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"inventory": char.Inventory})
-}
-
-type Requirement struct {
-	ItemID   string `json:"item_id"`
-	Quantity int    `json:"quantity"`
-}
-
-type UpgradeOption struct {
-	TargetItem string        `json:"target_item"`
-	BaseLevel  int           `json:"base_level"`
-	Materials  []Requirement `json:"materials"`
-}
-
-func GetUpgradeOptions(c *fiber.Ctx) error {
-	// Load upgrade config from database
-	collConfigs := database.DB.Collection("configs")
-	var gameConfig models.GameConfig
-	err := collConfigs.FindOne(context.TODO(), bson.M{"config_id": "main_config"}).Decode(&gameConfig)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load game config"})
-	}
-
-	return c.JSON(fiber.Map{
-		"upgrades": gameConfig.Upgrades,
-	})
 }
 
 type UpgradeRequest struct {
@@ -76,22 +52,13 @@ func UpgradeItem(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Character not found"})
 	}
 
-	// Find the item
-	itemIndex := -1
-	for i, item := range char.Inventory {
-		if item.ItemID == req.ItemID {
-			itemIndex = i
-			break
-		}
-	}
-
+	itemIndex := inventory.FindItemIndex(char.Inventory, req.ItemID)
 	if itemIndex == -1 {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Item not found in inventory"})
 	}
 
 	targetLevel := char.Inventory[itemIndex].Level
 
-	// Load upgrade config from database
 	collConfigs := database.DB.Collection("configs")
 	var gameConfig models.GameConfig
 	err = collConfigs.FindOne(context.TODO(), bson.M{"config_id": "main_config"}).Decode(&gameConfig)
@@ -104,8 +71,6 @@ func UpgradeItem(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "This item cannot be upgraded"})
 	}
 
-	// Calculate required materials based on target level
-	// Formula: material.quantity * targetLevel
 	required := []struct {
 		ItemID   string
 		Quantity int
@@ -120,42 +85,14 @@ func UpgradeItem(c *fiber.Ctx) error {
 		})
 	}
 
-	// Check if user has all materials
-	for _, reqMat := range required {
-		found := false
-		for _, invItem := range char.Inventory {
-			if invItem.ItemID == reqMat.ItemID && invItem.Quantity >= reqMat.Quantity {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error":    "Not enough materials",
-				"required": required,
-			})
-		}
+	if !inventory.HasMaterials(char.Inventory, required) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":    "Not enough materials",
+			"required": required,
+		})
 	}
 
-	// Deduct materials
-	for _, reqMat := range required {
-		for i, invItem := range char.Inventory {
-			if invItem.ItemID == reqMat.ItemID {
-				char.Inventory[i].Quantity -= reqMat.Quantity
-				break
-			}
-		}
-	}
-
-	// Remove items with 0 quantity to free inventory slots
-	newInventory := []models.Item{}
-	for _, item := range char.Inventory {
-		if item.Quantity > 0 {
-			newInventory = append(newInventory, item)
-		}
-	}
-	char.Inventory = newInventory
-
+	char.Inventory = inventory.DeductMaterials(char.Inventory, required)
 	char.Inventory[itemIndex].Level += 1
 
 	_, err = collChars.UpdateOne(context.TODO(), bson.M{"user_id": userID}, bson.M{"$set": bson.M{"inventory": char.Inventory}})
@@ -164,4 +101,17 @@ func UpgradeItem(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"message": "Item upgraded", "item": char.Inventory[itemIndex]})
+}
+
+func GetUpgradeOptions(c *fiber.Ctx) error {
+	collConfigs := database.DB.Collection("configs")
+	var gameConfig models.GameConfig
+	err := collConfigs.FindOne(context.TODO(), bson.M{"config_id": "main_config"}).Decode(&gameConfig)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load game config"})
+	}
+
+	return c.JSON(fiber.Map{
+		"upgrades": gameConfig.Upgrades,
+	})
 }

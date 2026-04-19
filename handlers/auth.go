@@ -2,9 +2,9 @@ package handlers
 
 import (
 	"context"
-	"os"
 	"time"
 
+	"deepidle-server/config"
 	"deepidle-server/database"
 	"deepidle-server/models"
 
@@ -90,10 +90,7 @@ func Signin(c *fiber.Ctx) error {
 	}
 
 	// Generate JWT
-	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		secret = "my_super_secret_jwt_key"
-	}
+	secret := config.GetJWTSecret()
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"user_id":  user.ID.Hex(),

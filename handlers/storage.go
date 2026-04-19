@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"deepidle-server/database"
+	"deepidle-server/inventory"
 	"deepidle-server/models"
 
 	"github.com/gofiber/fiber/v2"
@@ -45,50 +46,36 @@ func DepositStorage(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body or quantity"})
 	}
 
-	// Fetch character
 	collChars := database.DB.Collection("characters")
 	var char models.Character
 	if err := collChars.FindOne(context.TODO(), bson.M{"user_id": userID}).Decode(&char); err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Character not found"})
 	}
 
-	// Find item in inventory
-	foundIdx := -1
-	itemLevel := 1
-	for i, item := range char.Inventory {
-		if item.ItemID == req.ItemID {
-			foundIdx = i
-			itemLevel = item.Level
-			break
-		}
-	}
-
+	foundIdx := inventory.FindItemIndex(char.Inventory, req.ItemID)
 	if foundIdx == -1 || char.Inventory[foundIdx].Quantity < req.Quantity {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Not enough items in inventory"})
 	}
 
-	// Deduct from inventory
-	char.Inventory[foundIdx].Quantity -= req.Quantity
-	if char.Inventory[foundIdx].Quantity == 0 {
-		// Remove item entirely if quantity reaches 0
-		char.Inventory = append(char.Inventory[:foundIdx], char.Inventory[foundIdx+1:]...)
-	}
+	itemLevel := char.Inventory[foundIdx].Level
+	char.Inventory = inventory.DeductMaterials(char.Inventory, []struct {
+		ItemID   string
+		Quantity int
+	}{{ItemID: req.ItemID, Quantity: req.Quantity}})
 
-	// Update Character DB
 	_, err = collChars.UpdateOne(context.TODO(), bson.M{"user_id": userID}, bson.M{"$set": bson.M{"inventory": char.Inventory}})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to update inventory"})
 	}
 
-	// Add to global storage (with level for tools)
 	collStorage := database.DB.Collection("global_storage")
 	opts := options.Update().SetUpsert(true)
 	_, err = collStorage.UpdateOne(
 		context.TODO(),
 		bson.M{"item_id": req.ItemID},
 		bson.M{
-			"$inc":  bson.M{"quantity": req.Quantity},
-			"$set":  bson.M{"level": itemLevel},
+			"$inc": bson.M{"quantity": req.Quantity},
+			"$set": bson.M{"level": itemLevel},
 		},
 		opts,
 	)
@@ -110,7 +97,6 @@ func WithdrawStorage(c *fiber.Ctx) error {
 
 	collStorage := database.DB.Collection("global_storage")
 
-	// Check if in storage and has enough quantity
 	var storageItem models.GlobalStorageItem
 	if err := collStorage.FindOne(context.TODO(), bson.M{"item_id": req.ItemID}).Decode(&storageItem); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Item not found in global storage"})
@@ -120,32 +106,19 @@ func WithdrawStorage(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Not enough items in global storage"})
 	}
 
-	// Fetch character
 	collChars := database.DB.Collection("characters")
 	var char models.Character
 	if err := collChars.FindOne(context.TODO(), bson.M{"user_id": userID}).Decode(&char); err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Character not found"})
 	}
 
-	// Check if item already exists in inventory (for tools, there's only 1)
-	foundIdx := -1
-	for i, item := range char.Inventory {
-		if item.ItemID == req.ItemID {
-			foundIdx = i
-			break
-		}
-	}
-
+	foundIdx := inventory.FindItemIndex(char.Inventory, req.ItemID)
 	if foundIdx != -1 {
-		// Item exists - this shouldn't happen for tools (you can't have 2 axes)
-		// But for stackable resources, increase quantity
 		char.Inventory[foundIdx].Quantity += req.Quantity
 	} else {
-		// New item
 		if len(char.Inventory) >= char.MaxInventorySlots {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Inventory full. Cannot withdraw new item."})
 		}
-		// Use stored level if available, otherwise default to 1
 		level := storageItem.Level
 		if level == 0 {
 			level = 1
@@ -157,15 +130,12 @@ func WithdrawStorage(c *fiber.Ctx) error {
 		})
 	}
 
-	// Deduct from global storage
 	if storageItem.Quantity == req.Quantity {
-		// Delete record if empty
 		collStorage.DeleteOne(context.TODO(), bson.M{"item_id": req.ItemID})
 	} else {
 		collStorage.UpdateOne(context.TODO(), bson.M{"item_id": req.ItemID}, bson.M{"$inc": bson.M{"quantity": -req.Quantity}})
 	}
 
-	// Update Character DB
 	_, err = collChars.UpdateOne(context.TODO(), bson.M{"user_id": userID}, bson.M{"$set": bson.M{"inventory": char.Inventory}})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to update inventory"})
