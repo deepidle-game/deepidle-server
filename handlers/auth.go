@@ -20,15 +20,24 @@ type AuthRequest struct {
 	Password string `json:"password"`
 }
 
+type SignupRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	CharacterName string `json:"character_name"`
+}
+
 func Signup(c *fiber.Ctx) error {
-	var req AuthRequest
+	var req SignupRequest
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
+	if len(req.Username) < 3 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Username too short"})
+	}
+
 	collUsers := database.DB.Collection("users")
 	
-	// Check if user exists
 	var existingUser models.User
 	err := collUsers.FindOne(context.TODO(), bson.M{"username": req.Username}).Decode(&existingUser)
 	if err == nil {
@@ -52,11 +61,15 @@ func Signup(c *fiber.Ctx) error {
 
 	userID := result.InsertedID.(primitive.ObjectID)
 
-	// Create character
+	characterName := req.CharacterName
+	if characterName == "" {
+		characterName = req.Username
+	}
+
 	collChars := database.DB.Collection("characters")
 	char := models.Character{
 		UserID:          userID,
-		Name:            req.Username, 
+		Name:            characterName,
 		Level:           1,
 		CurrentAction:   "Idle",
 		ActionStartedAt: time.Now().Unix(),
@@ -67,7 +80,10 @@ func Signup(c *fiber.Ctx) error {
 			{ItemID: "wooden_sword", Level: 1, Quantity: 1},
 		},
 	}
-	_, _ = collChars.InsertOne(context.TODO(), char)
+	charResult, _ := collChars.InsertOne(context.TODO(), char)
+	characterID := charResult.InsertedID.(primitive.ObjectID)
+
+	collUsers.UpdateOne(context.TODO(), bson.M{"_id": userID}, bson.M{"$set": bson.M{"active_character_id": characterID}})
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"message": "User registered successfully"})
 }
@@ -89,12 +105,40 @@ func Signin(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid credentials"})
 	}
 
-	// Generate JWT
+	collChars := database.DB.Collection("characters")
+	cursor, err := collChars.Find(context.TODO(), bson.M{"user_id": user.ID})
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to fetch characters"})
+	}
+
+	var characters []models.Character
+	if err = cursor.All(context.TODO(), &characters); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to decode characters"})
+	}
+
+	charactersJSON := make([]fiber.Map, len(characters))
+	for i, char := range characters {
+		charactersJSON[i] = fiber.Map{
+			"id":       char.ID.Hex(),
+			"name":     char.Name,
+			"level":    char.Level,
+		}
+	}
+
 	secret := config.GetJWTSecret()
+
+	activeCharID := ""
+	if len(characters) > 0 {
+		activeCharID = characters[0].ID.Hex()
+		if user.ActiveCharacterID != (primitive.ObjectID{}) {
+			activeCharID = user.ActiveCharacterID.Hex()
+		}
+	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"user_id":  user.ID.Hex(),
 		"username": user.Username,
+		"character_id": activeCharID,
 		"exp":      time.Now().Add(time.Hour * 72).Unix(),
 	})
 
@@ -103,5 +147,8 @@ func Signin(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error creating token"})
 	}
 
-	return c.JSON(fiber.Map{"token": t})
+	return c.JSON(fiber.Map{
+		"token": t,
+		"characters": charactersJSON,
+	})
 }

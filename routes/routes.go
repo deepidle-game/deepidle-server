@@ -25,6 +25,12 @@ func Setup(app *fiber.App) {
 	character.Post("/claim", handlers.ClaimResources)
 	character.Patch("/name", handlers.UpdateCharacterName)
 
+	// Character Management (multi-character)
+	characters := protected.Group("/characters")
+	characters.Get("/list", handlers.ListCharacters)
+	characters.Post("/create", handlers.CreateCharacter)
+	characters.Post("/select", handlers.SelectCharacter)
+
 	// Inventory
 	inventory := protected.Group("/inventory")
 	inventory.Get("/", handlers.GetInventory)

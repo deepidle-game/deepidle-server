@@ -14,14 +14,21 @@ import (
 
 func GetInventory(c *fiber.Ctx) error {
 	userIDStr := c.Locals("userID").(string)
+	activeCharID := c.Locals("characterID").(string)
+
 	userID, err := primitive.ObjectIDFromHex(userIDStr)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user ID"})
 	}
 
+	charID, err := primitive.ObjectIDFromHex(activeCharID)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid character ID"})
+	}
+
 	collChars := database.DB.Collection("characters")
 	var char models.Character
-	err = collChars.FindOne(context.TODO(), bson.M{"user_id": userID}).Decode(&char)
+	err = collChars.FindOne(context.TODO(), bson.M{"_id": charID, "user_id": userID}).Decode(&char)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Character not found"})
 	}
@@ -35,9 +42,16 @@ type UpgradeRequest struct {
 
 func UpgradeItem(c *fiber.Ctx) error {
 	userIDStr := c.Locals("userID").(string)
+	activeCharID := c.Locals("characterID").(string)
+
 	userID, err := primitive.ObjectIDFromHex(userIDStr)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user ID"})
+	}
+
+	charID, err := primitive.ObjectIDFromHex(activeCharID)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid character ID"})
 	}
 
 	var req UpgradeRequest
@@ -47,7 +61,7 @@ func UpgradeItem(c *fiber.Ctx) error {
 
 	collChars := database.DB.Collection("characters")
 	var char models.Character
-	err = collChars.FindOne(context.TODO(), bson.M{"user_id": userID}).Decode(&char)
+	err = collChars.FindOne(context.TODO(), bson.M{"_id": charID, "user_id": userID}).Decode(&char)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Character not found"})
 	}
@@ -57,7 +71,7 @@ func UpgradeItem(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Item not found in inventory"})
 	}
 
-	targetLevel := char.Inventory[itemIndex].Level
+	itemLevel := char.Inventory[itemIndex].Level
 
 	collConfigs := database.DB.Collection("configs")
 	var gameConfig models.GameConfig
@@ -81,7 +95,7 @@ func UpgradeItem(c *fiber.Ctx) error {
 			Quantity int
 		}{
 			ItemID:   mat.ItemID,
-			Quantity: mat.Quantity * targetLevel,
+			Quantity: mat.Quantity * itemLevel,
 		})
 	}
 
@@ -93,14 +107,19 @@ func UpgradeItem(c *fiber.Ctx) error {
 	}
 
 	char.Inventory = inventory.DeductMaterials(char.Inventory, required)
-	char.Inventory[itemIndex].Level += 1
+	
+	newItemIndex := inventory.FindItemIndex(char.Inventory, req.ItemID)
+	if newItemIndex == -1 {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to find item after deduction"})
+	}
+	char.Inventory[newItemIndex].Level += 1
 
-	_, err = collChars.UpdateOne(context.TODO(), bson.M{"user_id": userID}, bson.M{"$set": bson.M{"inventory": char.Inventory}})
+	_, err = collChars.UpdateOne(context.TODO(), bson.M{"_id": charID, "user_id": userID}, bson.M{"$set": bson.M{"inventory": char.Inventory}})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to upgrade item"})
 	}
 
-	return c.JSON(fiber.Map{"message": "Item upgraded", "item": char.Inventory[itemIndex]})
+	return c.JSON(fiber.Map{"message": "Item upgraded", "item": char.Inventory[newItemIndex]})
 }
 
 func GetUpgradeOptions(c *fiber.Ctx) error {

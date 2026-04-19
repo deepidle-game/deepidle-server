@@ -30,6 +30,7 @@ func Protected() fiber.Handler {
 		claims := token.Claims.(jwt.MapClaims)
 		c.Locals("userID", claims["user_id"])
 		c.Locals("username", claims["username"])
+		c.Locals("characterID", claims["character_id"])
 
 		return c.Next()
 	}

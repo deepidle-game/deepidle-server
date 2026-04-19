@@ -31,9 +31,11 @@ func DeductMaterials(items []models.Item, required []struct {
 	Quantity int
 }) []models.Item {
 	for _, req := range required {
-		idx := FindItemIndex(items, req.ItemID)
-		if idx != -1 {
-			items[idx].Quantity -= req.Quantity
+		for i := range items {
+			if items[i].ItemID == req.ItemID {
+				items[i].Quantity -= req.Quantity
+				break
+			}
 		}
 	}
 

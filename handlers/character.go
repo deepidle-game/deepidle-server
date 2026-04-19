@@ -5,30 +5,40 @@ import (
 	"time"
 
 	"deepidle-server/claims"
+	"deepidle-server/config"
 	"deepidle-server/database"
 	"deepidle-server/models"
 	"deepidle-server/state"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/golang-jwt/jwt/v5"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 func GetCharacter(c *fiber.Ctx) error {
 	userIDStr := c.Locals("userID").(string)
+	activeCharID := c.Locals("characterID").(string)
+	
 	userID, err := primitive.ObjectIDFromHex(userIDStr)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user ID"})
 	}
 
+	charID, err := primitive.ObjectIDFromHex(activeCharID)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid character ID"})
+	}
+
 	collChars := database.DB.Collection("characters")
 	var char models.Character
-	err = collChars.FindOne(context.TODO(), bson.M{"user_id": userID}).Decode(&char)
+	err = collChars.FindOne(context.TODO(), bson.M{"_id": charID, "user_id": userID}).Decode(&char)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Character not found"})
 	}
 
 	return c.JSON(fiber.Map{
+		"id":             char.ID.Hex(),
 		"name":           char.Name,
 		"level":          char.Level,
 		"current_action": char.CurrentAction,
@@ -42,9 +52,16 @@ type ActionRequest struct {
 func UpdateAction(c *fiber.Ctx) error {
 	userIDStr := c.Locals("userID").(string)
 	username := c.Locals("username").(string)
+	activeCharID := c.Locals("characterID").(string)
+
 	userID, err := primitive.ObjectIDFromHex(userIDStr)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user ID"})
+	}
+
+	charID, err := primitive.ObjectIDFromHex(activeCharID)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid character ID"})
 	}
 
 	var req ActionRequest
@@ -55,7 +72,7 @@ func UpdateAction(c *fiber.Ctx) error {
 	collChars := database.DB.Collection("characters")
 	_, err = collChars.UpdateOne(
 		context.TODO(),
-		bson.M{"user_id": userID},
+		bson.M{"_id": charID, "user_id": userID},
 		bson.M{"$set": bson.M{
 			"current_action":   req.Action,
 			"action_started_at": time.Now().Unix(),
@@ -77,14 +94,21 @@ func GetOnlinePlayers(c *fiber.Ctx) error {
 
 func ClaimResources(c *fiber.Ctx) error {
 	userIDStr := c.Locals("userID").(string)
+	activeCharID := c.Locals("characterID").(string)
+
 	userID, err := primitive.ObjectIDFromHex(userIDStr)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user ID"})
 	}
 
+	charID, err := primitive.ObjectIDFromHex(activeCharID)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid character ID"})
+	}
+
 	collChars := database.DB.Collection("characters")
 	var char models.Character
-	err = collChars.FindOne(context.TODO(), bson.M{"user_id": userID}).Decode(&char)
+	err = collChars.FindOne(context.TODO(), bson.M{"_id": charID, "user_id": userID}).Decode(&char)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Character not found"})
 	}
@@ -136,7 +160,7 @@ func ClaimResources(c *fiber.Ctx) error {
 	char.Inventory = newInventory
 	_, err = collChars.UpdateOne(
 		context.TODO(),
-		bson.M{"user_id": userID},
+		bson.M{"_id": charID, "user_id": userID},
 		bson.M{"$set": bson.M{
 			"inventory":         char.Inventory,
 			"action_started_at": time.Now().Unix(),
@@ -164,9 +188,16 @@ type NameRequest struct {
 
 func UpdateCharacterName(c *fiber.Ctx) error {
 	userIDStr := c.Locals("userID").(string)
+	activeCharID := c.Locals("characterID").(string)
+
 	userID, err := primitive.ObjectIDFromHex(userIDStr)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user ID"})
+	}
+
+	charID, err := primitive.ObjectIDFromHex(activeCharID)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid character ID"})
 	}
 
 	var req NameRequest
@@ -181,7 +212,7 @@ func UpdateCharacterName(c *fiber.Ctx) error {
 	collChars := database.DB.Collection("characters")
 	_, err = collChars.UpdateOne(
 		context.TODO(),
-		bson.M{"user_id": userID},
+		bson.M{"_id": charID, "user_id": userID},
 		bson.M{"$set": bson.M{"name": req.Name}},
 	)
 	if err != nil {
@@ -189,5 +220,148 @@ func UpdateCharacterName(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"message": "Character name updated", "name": req.Name})
+}
+
+func ListCharacters(c *fiber.Ctx) error {
+	userIDStr := c.Locals("userID").(string)
+	userID, err := primitive.ObjectIDFromHex(userIDStr)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user ID"})
+	}
+
+	collChars := database.DB.Collection("characters")
+	cursor, err := collChars.Find(context.TODO(), bson.M{"user_id": userID})
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to fetch characters"})
+	}
+
+	var characters []models.Character
+	if err = cursor.All(context.TODO(), &characters); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to decode characters"})
+	}
+
+	charsJSON := make([]fiber.Map, len(characters))
+	for i, char := range characters {
+		charsJSON[i] = fiber.Map{
+			"id":             char.ID.Hex(),
+			"name":           char.Name,
+			"level":          char.Level,
+			"current_action": char.CurrentAction,
+		}
+	}
+
+	return c.JSON(fiber.Map{"characters": charsJSON})
+}
+
+type CreateCharacterRequest struct {
+	Name string `json:"name"`
+}
+
+func CreateCharacter(c *fiber.Ctx) error {
+	userIDStr := c.Locals("userID").(string)
+	userID, err := primitive.ObjectIDFromHex(userIDStr)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user ID"})
+	}
+
+	var req CreateCharacterRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
+	}
+
+	if len(req.Name) < 3 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Name too short"})
+	}
+
+	collChars := database.DB.Collection("characters")
+	char := models.Character{
+		UserID:          userID,
+		Name:            req.Name,
+		Level:           1,
+		CurrentAction:   "Idle",
+		ActionStartedAt: time.Now().Unix(),
+		MaxInventorySlots: 5,
+		Inventory: []models.Item{
+			{ItemID: "wooden_axe", Level: 1, Quantity: 1},
+			{ItemID: "wooden_pickaxe", Level: 1, Quantity: 1},
+			{ItemID: "wooden_sword", Level: 1, Quantity: 1},
+		},
+	}
+
+	result, err := collChars.InsertOne(context.TODO(), char)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not create character"})
+	}
+
+	characterID := result.InsertedID.(primitive.ObjectID)
+
+	return c.JSON(fiber.Map{
+		"message":    "Character created",
+		"character": fiber.Map{
+			"id":    characterID.Hex(),
+			"name":  char.Name,
+			"level": char.Level,
+		},
+	})
+}
+
+type SelectCharacterRequest struct {
+	CharacterID string `json:"character_id"`
+}
+
+func SelectCharacter(c *fiber.Ctx) error {
+	userIDStr := c.Locals("userID").(string)
+	userID, err := primitive.ObjectIDFromHex(userIDStr)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user ID"})
+	}
+
+	var req SelectCharacterRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
+	}
+
+	charID, err := primitive.ObjectIDFromHex(req.CharacterID)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid character ID"})
+	}
+
+	collChars := database.DB.Collection("characters")
+	var char models.Character
+	err = collChars.FindOne(context.TODO(), bson.M{"_id": charID, "user_id": userID}).Decode(&char)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Character not found"})
+	}
+
+	collUsers := database.DB.Collection("users")
+	_, err = collUsers.UpdateOne(
+		context.TODO(),
+		bson.M{"_id": userID},
+		bson.M{"$set": bson.M{"active_character_id": charID}},
+	)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not update active character"})
+	}
+
+	username := c.Locals("username").(string)
+	secret := config.GetJWTSecret()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"user_id":  userIDStr,
+		"username": username,
+		"character_id": char.ID.Hex(),
+		"exp":      time.Now().Add(time.Hour * 72).Unix(),
+	})
+
+	newToken, err := token.SignedString([]byte(secret))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to create token"})
+	}
+
+	return c.JSON(fiber.Map{
+		"message":     "Character selected",
+		"character_id": char.ID.Hex(),
+		"name":        char.Name,
+		"token":       newToken,
+	})
 }
 

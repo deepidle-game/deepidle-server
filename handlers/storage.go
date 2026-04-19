@@ -36,9 +36,16 @@ type StorageActionRequest struct {
 
 func DepositStorage(c *fiber.Ctx) error {
 	userIDStr := c.Locals("userID").(string)
+	activeCharID := c.Locals("characterID").(string)
+
 	userID, err := primitive.ObjectIDFromHex(userIDStr)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user ID"})
+	}
+
+	charID, err := primitive.ObjectIDFromHex(activeCharID)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid character ID"})
 	}
 
 	var req StorageActionRequest
@@ -48,7 +55,7 @@ func DepositStorage(c *fiber.Ctx) error {
 
 	collChars := database.DB.Collection("characters")
 	var char models.Character
-	if err := collChars.FindOne(context.TODO(), bson.M{"user_id": userID}).Decode(&char); err != nil {
+	if err := collChars.FindOne(context.TODO(), bson.M{"_id": charID, "user_id": userID}).Decode(&char); err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Character not found"})
 	}
 
@@ -63,7 +70,7 @@ func DepositStorage(c *fiber.Ctx) error {
 		Quantity int
 	}{{ItemID: req.ItemID, Quantity: req.Quantity}})
 
-	_, err = collChars.UpdateOne(context.TODO(), bson.M{"user_id": userID}, bson.M{"$set": bson.M{"inventory": char.Inventory}})
+	_, err = collChars.UpdateOne(context.TODO(), bson.M{"_id": charID, "user_id": userID}, bson.M{"$set": bson.M{"inventory": char.Inventory}})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to update inventory"})
 	}
@@ -85,9 +92,16 @@ func DepositStorage(c *fiber.Ctx) error {
 
 func WithdrawStorage(c *fiber.Ctx) error {
 	userIDStr := c.Locals("userID").(string)
+	activeCharID := c.Locals("characterID").(string)
+
 	userID, err := primitive.ObjectIDFromHex(userIDStr)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid user ID"})
+	}
+
+	charID, err := primitive.ObjectIDFromHex(activeCharID)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid character ID"})
 	}
 
 	var req StorageActionRequest
@@ -108,7 +122,7 @@ func WithdrawStorage(c *fiber.Ctx) error {
 
 	collChars := database.DB.Collection("characters")
 	var char models.Character
-	if err := collChars.FindOne(context.TODO(), bson.M{"user_id": userID}).Decode(&char); err != nil {
+	if err := collChars.FindOne(context.TODO(), bson.M{"_id": charID, "user_id": userID}).Decode(&char); err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Character not found"})
 	}
 
@@ -136,7 +150,7 @@ func WithdrawStorage(c *fiber.Ctx) error {
 		collStorage.UpdateOne(context.TODO(), bson.M{"item_id": req.ItemID}, bson.M{"$inc": bson.M{"quantity": -req.Quantity}})
 	}
 
-	_, err = collChars.UpdateOne(context.TODO(), bson.M{"user_id": userID}, bson.M{"$set": bson.M{"inventory": char.Inventory}})
+	_, err = collChars.UpdateOne(context.TODO(), bson.M{"_id": charID, "user_id": userID}, bson.M{"$set": bson.M{"inventory": char.Inventory}})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to update inventory"})
 	}

@@ -26,8 +26,9 @@ type UpgradeConfig struct {
 // GameConfig is the root configuration object for the server
 type GameConfig struct {
 	ID        primitive.ObjectID          `bson:"_id,omitempty" json:"id,omitempty"`
-	ConfigID  string                     `bson:"config_id" json:"config_id"` // "main_config"
+	ConfigID  string                     `bson:"config_id" json:"config_id"`
 	Actions   map[string]ActionConfig   `bson:"actions" json:"actions"`
-	Upgrades  map[string]UpgradeConfig   `bson:"upgrades" json:"upgrades"` // item_id -> upgrade config
+	Upgrades  map[string]UpgradeConfig   `bson:"upgrades" json:"upgrades"`
 	BaseSlots int                       `bson:"base_slots" json:"base_slots"`
+	Resources []string                  `bson:"resources" json:"resources"`
 }
